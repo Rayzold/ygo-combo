@@ -74,4 +74,31 @@ async function cachedList(key: string, params: Record<string, string>): Promise<
 }
 
 export const tcgBanlist = () => cachedList('list:banlist-tcg', { banlist: 'tcg' })
+
+/** Οι κάρτες ενός archetype (για το Counter Deck): ό,τι παίζει ο αντίπαλος. */
+export const cardsByArchetype = (name: string) => cachedList(`list:arch:${name.toLowerCase()}`, { archetype: name })
+
+/** Όλα τα archetypes, για αυτόματη συμπλήρωση. */
+export async function archetypes(): Promise<string[]> {
+  const hit = cacheGet<string[]>('list:archetypes', 7 * DAY)
+  if (hit) return hit
+  const res = await fetch('https://db.ygoprodeck.com/api/v7/archetypes.php')
+  if (!res.ok) throw new Error(`YGOPRODeck ${res.status}`)
+  const names = ((await res.json()) as { archetype_name: string }[]).map(a => a.archetype_name).sort()
+  cacheSet('list:archetypes', names)
+  return names
+}
+
+/** Έκδοση και ημερομηνία της βάσης του YGOPRODeck (αλλάζει με νέες κάρτες και banlists). */
+export async function dbVersion(): Promise<{ version: string; updated: string } | null> {
+  const hit = cacheGet<{ version: string; updated: string }>('db:version', DAY)
+  if (hit) return hit
+  const res = await fetch('https://db.ygoprodeck.com/api/v7/checkDBVer.php')
+  if (!res.ok) return null
+  const row = ((await res.json()) as { database_version: string; last_update: string }[])[0]
+  if (!row) return null
+  const v = { version: row.database_version, updated: row.last_update }
+  cacheSet('db:version', v)
+  return v
+}
 export const staples = () => cachedList('list:staples', { staple: 'yes' })
