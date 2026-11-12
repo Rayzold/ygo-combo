@@ -46,13 +46,15 @@ export default function App() {
   const [advice, setAdvice] = useState<(Advice & { rejected: number; extra: Card[] }) | null>(null)
   const [opponent, setOpponent] = useState('')
   const [archList, setArchList] = useState<string[]>([])
-  const [counter, setCounter] = useState<(CounterAdvice & { side: Card[] }) | null>(null)
+  const [counter, setCounter] = useState<(CounterAdvice & { side: Card[]; real: Map<string, Card> }) | null>(null)
   const [news, setNews] = useState<{ forbidden: number; limited: number; semi: number; updated?: string } | null>(null)
+  const [shortlist, setShortlist] = useState<Card[]>(() => load('shortlist', []))
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
 
   useEffect(() => { localStorage.setItem('deck', JSON.stringify(deck)) }, [deck])
   useEffect(() => { localStorage.setItem('geminiKey', geminiKey) }, [geminiKey])
+  useEffect(() => { localStorage.setItem('shortlist', JSON.stringify(shortlist)) }, [shortlist])
   useEffect(() => { history.replaceState(null, '', view === 'home' ? location.pathname : `#${view}`) }, [view])
   const go = (v: View) => { setView(v); setError('') }
 
@@ -100,6 +102,17 @@ export default function App() {
       const hit = d.find(e => e.id === card.id && e.zone === z)
       return hit ? d.map(e => (e === hit ? { ...e, count: e.count + 1 } : e)) : [...d, { id: card.id, zone: z, count: 1, owned: true }]
     })
+  }
+
+  // «Λίστα»: κάρτες που μαζεύεις από Search και Counter Deck, για να τις βάλεις μετά στο deck
+  const inList = (c: Card) => shortlist.some(x => x.id === c.id)
+  const toList = (c: Card) => setShortlist(l => (l.some(x => x.id === c.id) ? l : [...l, c]))
+  const fromList = (c: Card) => setShortlist(l => l.filter(x => x.id !== c.id))
+  function ListBtn({ card }: { card?: Card }) {
+    if (!card) return null
+    return inList(card)
+      ? <button className="listed" onClick={() => fromList(card)} title="Βγάλ' τη από τη Λίστα">✓ Λίστα</button>
+      : <button onClick={() => toList(card)}>+ Λίστα</button>
   }
 
   const update = (target: DeckEntry, patch: Partial<DeckEntry>) =>
@@ -158,12 +171,16 @@ export default function App() {
       const mine = deck.map(e => cards.get(e.id)).filter((c): c is Card => !!c)
       const result = await askCounter(geminiKey, model, name, theirs, mine)
       setBusy('Ελέγχω ότι οι προτάσεις είναι αληθινές κάρτες…')
-      const real = await cardsByNames(result.sideSuggestions.map(s => s.name)).catch(() => [])
+      const names = [...result.sideSuggestions, ...result.threats].map(s => s.name)
+      const real = await cardsByNames(names).catch(() => [])
+      const byName = new Map([...real, ...mine, ...theirs].map(c => [c.name.toLowerCase(), c] as const))
+      const sideNames = new Set(result.sideSuggestions.map(s => s.name.toLowerCase()))
       const owned = new Set(mine.map(c => c.name.toLowerCase()))
       setCounter({
         ...result,
         fromCollection: result.fromCollection.filter(f => owned.has(f.name.toLowerCase())),
-        side: real.filter(c => c.ban_tcg !== 'Forbidden' && !owned.has(c.name.toLowerCase())),
+        side: real.filter(c => sideNames.has(c.name.toLowerCase()) && c.ban_tcg !== 'Forbidden' && !owned.has(c.name.toLowerCase())),
+        real: byName,
       })
     })
   }
@@ -184,7 +201,7 @@ export default function App() {
         </button>
         <nav>
           {tiles.map(t => (
-            <button key={t.id} className={view === t.id ? 'on' : ''} onClick={() => go(t.id)}>{t.title}</button>
+            <button key={t.id} className={view === t.id ? 'on' : ''} onClick={() => go(t.id)}>{t.title}{t.id === 'deck' && shortlist.length > 0 && <span className="badge">{shortlist.length}</span>}</button>
           ))}
         </nav>
         <label className="key">
@@ -253,6 +270,7 @@ export default function App() {
                   </button>
                   {openCard === c.id && <p className="desc">{c.desc}</p>}
                   <span className="acts">
+                    <ListBtn card={c} />
                     <button onClick={() => add(c)}>+ Deck</button>
                     <button onClick={() => add(c, 'side')}>+ Side</button>
                   </span>
@@ -276,20 +294,21 @@ export default function App() {
               <div className="counter">
                 {counter.plan && <p className="plan">{counter.plan}</p>}
                 <h3>Τι να σταματήσεις</h3>
-                <ul className="results">{counter.threats.map(t => <li key={t.name}><span>{t.name}<small>{t.why}</small></span></li>)}</ul>
+                <ul className="results">{counter.threats.map(t => <li key={t.name}><span>{t.name}<small>{t.why}</small></span><ListBtn card={counter.real.get(t.name.toLowerCase())} /></li>)}</ul>
                 <h3>Από τη συλλογή σου</h3>
                 {counter.fromCollection.length ? (
-                  <ul className="results">{counter.fromCollection.map(f => <li key={f.name}><span>{f.name}<small>{f.how}</small></span></li>)}</ul>
+                  <ul className="results">{counter.fromCollection.map(f => <li key={f.name}><span>{f.name}<small>{f.how}</small></span><ListBtn card={counter.real.get(f.name.toLowerCase())} /></li>)}</ul>
                 ) : <p className="muted">Τίποτα από όσα έχεις δεν βοηθάει ιδιαίτερα.</p>}
                 <h3>Για το Side Deck</h3>
                 <ul className="results">
                   {counter.side.map(c => (
                     <li key={c.id}>
                       <span>{c.name} <Ban card={c} /><small>{counter.sideSuggestions.find(s => s.name.toLowerCase() === c.name.toLowerCase())?.why}</small></span>
-                      <button onClick={() => add(c, 'side')}>+ Side</button>
+                      <span><ListBtn card={c} /><button onClick={() => add(c, 'side')}>+ Side</button></span>
                     </li>
                   ))}
                 </ul>
+                {(counter.threats.length + counter.side.length) > 0 && <p className="muted">Με «+ Λίστα» τις μαζεύεις, και στο Deck Builder τις περνάς σε Main, Extra ή Side.</p>}
               </div>
             )}
           </section>
@@ -297,6 +316,27 @@ export default function App() {
 
         {view === 'deck' && (
           <>
+            {shortlist.length > 0 && (
+              <section className="panel shortlist">
+                <h2>Λίστα <span className="count">{shortlist.length}</span>
+                  <button className="clear" onClick={() => setShortlist([])}>Άδειασμα</button></h2>
+                <p className="muted">Κάρτες που μάζεψες από Card Search και Counter Deck. Πέρασέ τες στο deck· φεύγουν από τη Λίστα μόλις μπουν.</p>
+                <ul className="results">
+                  {shortlist.map(c => (
+                    <li key={c.id} className={frame(c.type)}>
+                      <span>{c.name} <Ban card={c} /><small>{c.type}</small></span>
+                      <span>
+                        {EXTRA_TYPES.test(c.type)
+                          ? <button onClick={() => { add(c, 'extra'); fromList(c) }}>→ Extra</button>
+                          : <button onClick={() => { add(c, 'main'); fromList(c) }}>→ Main</button>}
+                        {!EXTRA_TYPES.test(c.type) && <button onClick={() => { add(c, 'side'); fromList(c) }}>→ Side</button>}
+                        <button onClick={() => fromList(c)} title="Αφαίρεση">✕</button>
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
             <section className="toolbar">
               <label className="button">Import .ydk<input type="file" accept=".ydk" hidden onChange={e => importYdk(e.target.files?.[0])} /></label>
               <button onClick={exportYdk} disabled={!deck.length}>Export .ydk</button>
